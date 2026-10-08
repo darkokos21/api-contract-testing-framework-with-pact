@@ -58,6 +58,7 @@ jobs:
           elapsed=0
 
           until curl -fsS \
+            -u pact:pact \
             http://localhost:9292/diagnostic/status/heartbeat
           do
             if [ "$elapsed" -ge "$timeout" ]; then
