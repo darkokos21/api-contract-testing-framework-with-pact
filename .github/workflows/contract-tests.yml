@@ -1,0 +1,161 @@
+name: Contract Tests
+
+on:
+  push:
+    branches:
+      - main
+      - "feature/**"
+
+  pull_request:
+    branches:
+      - main
+
+
+jobs:
+
+  contract-tests:
+    name: Contract Testing Pipeline
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+
+      - name: Install consumer dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r consumer/requirements.txt
+
+
+      - name: Run consumer contract tests
+        run: |
+          cd consumer
+          pytest
+
+
+      - name: Show generated Pact
+        run: |
+          echo "Generated Pact files:"
+          find pacts -type f -maxdepth 1 -print
+
+
+      - name: Start Pact Broker and Provider
+        run: |
+          docker compose up -d postgres pact-broker provider
+
+
+      - name: Wait for Pact Broker
+        run: |
+          timeout=120
+          elapsed=0
+
+          until curl -fsS \
+            http://localhost:9292/diagnostic/status/heartbeat
+          do
+            if [ "$elapsed" -ge "$timeout" ]; then
+              echo "Pact Broker did not become ready."
+              docker compose logs pact-broker
+              exit 1
+            fi
+
+            echo "Waiting for Pact Broker..."
+            sleep 5
+            elapsed=$((elapsed + 5))
+          done
+
+          echo "Pact Broker is ready."
+
+
+      - name: Wait for Provider
+        run: |
+          timeout=120
+          elapsed=0
+
+          until curl -fsS \
+            http://localhost:8000/health
+          do
+            if [ "$elapsed" -ge "$timeout" ]; then
+              echo "Provider did not become ready."
+              docker compose logs provider
+              exit 1
+            fi
+
+            echo "Waiting for Provider..."
+            sleep 5
+            elapsed=$((elapsed + 5))
+          done
+
+          echo "Provider is ready."
+
+
+      - name: Install Pact CLI
+        uses: pact-foundation/pact-cli@main
+
+
+      - name: Publish Pact
+        env:
+          PACT_BROKER_BASE_URL: http://localhost:9292
+          PACT_BROKER_USERNAME: pact
+          PACT_BROKER_PASSWORD: pact
+        run: |
+          pact broker publish "pacts/OrderService-ProductService.json" \
+            --consumer-app-version "${GITHUB_SHA}" \
+            --branch "${GITHUB_REF_NAME}" \
+            --broker-base-url "${PACT_BROKER_BASE_URL}" \
+            --broker-username "${PACT_BROKER_USERNAME}" \
+            --broker-password "${PACT_BROKER_PASSWORD}" \
+            --validate
+
+
+      - name: Run provider verification
+        env:
+          CI: "true"
+          PACT_BROKER_BASE_URL: http://localhost:9292
+          PACT_BROKER_USERNAME: pact
+          PACT_BROKER_PASSWORD: pact
+          PROVIDER_URL: http://localhost:8000
+          PROVIDER_VERSION: ${{ github.sha }}
+        run: |
+          pytest provider/tests/test_provider_contract.py -v
+
+
+      - name: Record provider deployment
+        run: |
+          pact broker record-deployment \
+            --pacticipant ProductService \
+            --version "${GITHUB_SHA}" \
+            --environment test \
+            --broker-base-url http://localhost:9292 \
+            --broker-username pact \
+            --broker-password pact
+
+
+      - name: Check deployment compatibility
+        run: |
+          pact broker can-i-deploy \
+            --pacticipant OrderService \
+            --version "${GITHUB_SHA}" \
+            --to-environment test \
+            --broker-base-url http://localhost:9292 \
+            --broker-username pact \
+            --broker-password pact
+
+
+      - name: Show Broker logs on failure
+        if: failure()
+        run: |
+          docker compose logs pact-broker
+
+
+      - name: Show Provider logs on failure
+        if: failure()
+        run: |
+          docker compose logs provider

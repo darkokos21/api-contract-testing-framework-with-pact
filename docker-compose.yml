@@ -1,0 +1,70 @@
+services:
+
+  postgres:
+    image: postgres:17
+    container_name: contract-guard-postgres
+
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: pact_broker
+
+    volumes:
+      - pact-broker-postgres:/var/lib/postgresql/data
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U postgres -d pact_broker"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  pact-broker:
+    image: pactfoundation/pact-broker:2.137.0-pactbroker2.118.0
+    container_name: contract-guard-broker
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    ports:
+      - "9292:9292"
+
+    environment:
+      PACT_BROKER_PORT: "9292"
+
+      PACT_BROKER_DATABASE_URL: >-
+        postgres://postgres:password@postgres/pact_broker
+
+      PACT_BROKER_DATABASE_CONNECT_MAX_RETRIES: "10"
+
+      PACT_BROKER_LOG_LEVEL: INFO
+
+      PACT_BROKER_BASE_URL: >-
+        http://localhost:9292 http://pact-broker:9292
+
+      PACT_BROKER_BASIC_AUTH_USERNAME: pact
+      PACT_BROKER_BASIC_AUTH_PASSWORD: pact
+
+  provider:
+    build:
+      context: ./provider
+      dockerfile: Dockerfile
+
+    container_name: contract-guard-provider
+
+    ports:
+      - "8000:8000"
+
+    environment:
+      PROVIDER_URL: http://provider:8000
+
+    depends_on:
+      pact-broker:
+        condition: service_started
+
+volumes:
+  pact-broker-postgres:
